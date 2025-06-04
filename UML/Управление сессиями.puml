@@ -1,0 +1,141 @@
+@startuml Session Management
+!pragma encoding UTF-8
+
+' Стили и настройки
+skinparam class {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+}
+skinparam note {
+    BackgroundColor LightYellow
+    BorderColor Gray
+}
+
+' Исключения
+package "Exceptions" {
+    class SessionError {
+        + message: str
+    }
+    class SessionValidationError {
+        + message: str
+    }
+    class SessionExpiredError {
+        + message: str
+    }
+}
+
+' Основной класс управления сессиями
+class SessionManager {
+    ' Атрибуты
+    - logger: Logger
+    - session_duration: timedelta
+    - refresh_token_duration: timedelta
+    - active_sessions: Dict[str, dict]
+    - refresh_tokens: Dict[str, dict]
+    - keys_dir: Path
+    - private_key: RSAPrivateKey
+    - public_key: RSAPublicKey
+    - cleanup_interval: int
+    - max_refresh_attempts: int
+    - refresh_attempt_window: int
+    - session_creation_limit: int
+    
+    ' Конструктор
+    + __init__(session_duration: int, refresh_token_duration: int, keys_dir: str): void
+    
+    ' Публичные методы
+    + create_session(user_id: int): Tuple[str, str]
+    + validate_session(token: str): dict
+    + refresh_session_token(refresh_token: str): Tuple[str, str]
+    + invalidate_session(token: str): bool
+    + is_valid_session(token: str): bool
+    + get_session_info(token: str): dict
+    + shutdown(): void
+    
+    ' Приватные методы
+    - _init_keys(): void
+    - _load_keys(): bool
+    - _check_key_file_permissions(file_path: Path): bool
+    - _set_key_file_permissions(file_path: Path): void
+    - _start_cleanup_thread(): void
+    - _cleanup_expired_sessions(): void
+    - _cleanup_attempts(current_time: datetime): void
+    - _check_session_creation_limit(user_id: int): bool
+    - _check_refresh_rate_limit(user_id: int): bool
+    - _get_user_keys_dir(user_id: int): Path
+}
+
+' Связанные классы из других модулей
+class MainWindow {
+    - session_manager: SessionManager
+    + handle_session_expiration(): void
+    + check_session_status(): void
+}
+
+class PasswordSecurity {
+    - session_manager: SessionManager
+    + verify_session_access(): bool
+}
+
+class AutoLogout {
+    - session_manager: SessionManager
+    + check_inactivity(): void
+    + force_logout(): void
+}
+
+class UserAuthentication {
+    + authenticate(): bool
+    + create_user_session(): void
+}
+
+' Утилиты и зависимости
+class LoggingConfig {
+    + setup_logging(): Logger
+}
+
+class SecureDataUtils {
+    + get_user_keys_dir(user_id: int): Path
+    + ensure_directories_exist(user_id: int): void
+}
+
+' Наследование
+SessionError <|-- SessionValidationError
+SessionError <|-- SessionExpiredError
+
+' Зависимости и связи
+MainWindow --> SessionManager: использует
+PasswordSecurity --> SessionManager: использует
+AutoLogout --> SessionManager: использует
+UserAuthentication ..> SessionManager: создаёт
+SessionManager ..> LoggingConfig: uses
+SessionManager ..> SecureDataUtils: uses
+
+' Связи с исключениями
+SessionManager ..> SessionError: throws
+SessionManager ..> SessionValidationError: throws
+SessionManager ..> SessionExpiredError: throws
+
+' Примечания
+note right of SessionManager::create_session
+  Создает новую сессию и refresh токен
+  с использованием RSA подписи
+end note
+
+note right of SessionManager::_cleanup_expired_sessions
+  Фоновый поток для очистки
+  устаревших сессий и токенов
+end note
+
+note bottom of SessionManager
+  Управляет жизненным циклом сессий,
+  обеспечивает безопасность и изоляцию данных
+end note
+
+note right of MainWindow
+  GUI приложения, отвечает за
+  отображение состояния сессии
+end note
+
+
+@enduml

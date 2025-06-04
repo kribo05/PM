@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+service Otp {
+    // Сервис для работы ОТР
+    // Метод инициализации одноразового пароля
+    rpc InitOtp(RequestInitOtp) returns (ResponseInitOtp);
+    // Метод проверки одноразового пароля
+    rpc CheckOtp(RequestCheckOtp) returns (ResponseCheckOtp);
+}
+
+message RequestInitOtp {
+    string user_id = 1;
+    string username = 2;
+}
+
+message ResponseInitOtp {
+    string secret = 1;
+    string qr_code_path = 2;
+    string error = 3;
+}
+
+message RequestCheckOtp {
+    string user_id = 1;
+    string otp = 2;
+}
+
+message ResponseCheckOtp {
+    bool valid = 1;
+    string error = 2;
+} 

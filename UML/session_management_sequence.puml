@@ -1,0 +1,109 @@
+@startuml Session Management
+actor Client
+participant SessionManager
+participant AutoLogoutManager
+participant UserKeys
+
+title Session Management Sequences
+
+== Session Creation ==
+Client -> SessionManager: create_session(user_id)
+activate SessionManager
+SessionManager -> SessionManager: _check_session_creation_limit(user_id)
+alt rate limit not exceeded
+    SessionManager -> UserKeys: _init_user_keys(user_id)
+    activate UserKeys
+    UserKeys --> SessionManager: private_key, public_key
+    deactivate UserKeys
+    SessionManager -> SessionManager: Generate session_payload (type='session')
+    SessionManager -> UserKeys: Sign session_payload (using private_key)
+    activate UserKeys
+    UserKeys --> SessionManager: session_signature
+    deactivate UserKeys
+    SessionManager -> SessionManager: Encode JWT session_token (with session_signature)
+    SessionManager -> SessionManager: Generate refresh_payload (type='refresh')
+    SessionManager -> UserKeys: Sign refresh_payload (using private_key)
+    activate UserKeys
+    UserKeys --> SessionManager: refresh_signature
+    deactivate UserKeys
+    SessionManager -> SessionManager: Encode JWT refresh_token (with refresh_signature)
+    SessionManager -> SessionManager: Store active_sessions[session_token] (with public_key)
+    SessionManager -> SessionManager: Store refresh_tokens[refresh_token] (with public_key)
+    SessionManager -> AutoLogoutManager: update_activity(session_token)
+    activate AutoLogoutManager
+    AutoLogoutManager --> SessionManager
+    deactivate AutoLogoutManager
+    SessionManager --> Client: session_token, refresh_token
+else rate limit exceeded
+    SessionManager --> Client: RateLimitError
+end
+deactivate SessionManager
+
+== Session Validation ==
+Client -> SessionManager: validate_session(session_token)
+activate SessionManager
+SessionManager -> SessionManager: Check token in active_sessions
+alt token found and not expired (in-memory check)
+    SessionManager -> SessionManager: Get session_info (incl. public_key)
+    SessionManager -> SessionManager: Decode JWT (no verify) to get payload + signature
+    SessionManager -> SessionManager: Check payload.type == 'session'
+    SessionManager -> UserKeys: Verify signature (using public_key, payload)
+    activate UserKeys
+    UserKeys --> SessionManager: verification_status
+    deactivate UserKeys
+    alt signature valid
+        ' Note: If is_valid_session is used, AutoLogoutManager.update_activity is called here
+        SessionManager --> Client: session_info (valid)
+    else signature invalid
+        SessionManager --> Client: SessionValidationError
+    end
+else token not found or expired
+    SessionManager --> Client: SessionValidationError or SessionExpiredError
+end
+deactivate SessionManager
+
+== Session Refresh ==
+Client -> SessionManager: refresh_session_token(refresh_token)
+activate SessionManager
+SessionManager -> SessionManager: Check token in refresh_tokens
+alt refresh_token found and not expired
+    SessionManager -> SessionManager: Get refresh_info (incl. public_key, user_id)
+    SessionManager -> SessionManager: Decode JWT (no verify) to get payload + signature
+    SessionManager -> SessionManager: Check payload.type == 'refresh'
+    SessionManager -> UserKeys: Verify signature (using public_key, payload)
+    activate UserKeys
+    UserKeys --> SessionManager: verification_status
+    deactivate UserKeys
+    alt signature valid
+        SessionManager -> SessionManager: _check_refresh_rate_limit(user_id)
+        alt rate limit not exceeded
+            SessionManager -> SessionManager: create_session(user_id) // Internal call, simplified here
+            note right: This triggers the Session Creation sequence again
+            SessionManager --> Client: new_session_token, new_refresh_token
+        else rate limit exceeded
+            SessionManager --> Client: RateLimitError
+        end
+        SessionManager -> SessionManager: Delete old refresh_token from refresh_tokens
+    else signature invalid
+        SessionManager --> Client: SessionRefreshError (invalid signature)
+    end
+else refresh_token not found or expired
+    SessionManager --> Client: SessionRefreshError or SessionExpiredError
+end
+deactivate SessionManager
+
+== Session Invalidation & Cleanup (Conceptual) ==
+note across
+  Session Invalidation can occur:
+  1. Explicitly via `invalidate_session(token)`:
+     - `SessionManager` removes token from `active_sessions`.
+     - `SessionManager` notifies `AutoLogoutManager`.
+  2. Periodically by `_cleanup_expired_sessions` thread:
+     - Removes expired `active_sessions` and `refresh_tokens`.
+     - Cleans up rate limit attempt histories.
+  3. Due to inactivity or expiry checked by `is_valid_session(token)`:
+     - If `AutoLogoutManager` reports inactivity, or token is past `expires` timestamp,
+       `SessionManager` calls `invalidate_session(token)`.
+end note
+
+@enduml 

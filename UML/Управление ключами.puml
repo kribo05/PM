@@ -1,0 +1,214 @@
+@startuml Диаграмма Управления Ключами
+
+' Стили и настройки
+skinparam class {
+    BackgroundColor White
+    ArrowColor Black
+    BorderColor Black
+    RoundCorner 10
+}
+skinparam note {
+    BackgroundColor LightYellow
+    BorderColor Gray
+    RoundCorner 5
+}
+skinparam package {
+    BackgroundColor PaleTurquoise
+    BorderColor DarkSlateGray
+    RoundCorner 10
+}
+
+class AppLogic <<Концепция>> {
+  ' Представляет высокоуровневую логику приложения или UI
+}
+
+package "Конфигурация" {
+    class Config {
+        - master_password: Optional[str]
+        + secure_data_dir: Path
+        + database_path: str
+        + set_master_password(password: str): void
+        + get_master_password(): Optional[str]
+        + db_key(): str
+        + _ensure_secure_directories(): void
+    }
+    note right of Config
+        Управляет мастер-паролем (ключ-фразой DB_KEY)
+        для шифрования базы данных SQLCipher.
+        Пароль хранится в оперативной памяти.
+        Обеспечивает настройку защищенных директорий.
+    end note
+}
+
+package "Управление Ключами Шифрования" {
+    class KeyFactory {
+        - key_managers_cache: Dict[int, Tuple[FernetKeyManager, AESKeyManager]]
+        + get_key_managers(base_dir: str, user_id: int): Tuple[FernetKeyManager, AESKeyManager]
+        + force_create_keys(base_dir: str, user_id: int): Tuple[bool, bool]
+        + clear_key_managers_cache(user_id: Optional[int]): void
+        # _ensure_directory_permissions(directory: Path): void
+    }
+    note right of KeyFactory
+        Центральная фабрика для получения
+        менеджеров ключей AES и Fernet.
+        Кэширует менеджеры для производительности.
+        Может принудительно создавать файлы ключей.
+    end note
+
+    class KeyInitializer {
+        - key_factory: KeyFactory
+        + initialize_user_keys(user_id: int): bool
+        # _initialize_keys_for_user(base_dir: str, user_id: int): bool
+    }
+    note left of KeyInitializer
+        Инициализирует все необходимые ключи шифрования
+        (AES, Fernet) и их структуру хранения
+        для пользователя, включая директории резервных копий
+        и права доступа.
+    end note
+
+    abstract class BaseKeyManager {
+        # user_id: int
+        # keys_dir: Path
+        # keys_file: Path
+        # backup_file: Path
+        # keys_data: KeysData
+        # recovery_manager: KeyRecoveryManager
+        # _load_or_create_keys(): void
+        # _create_new_keys(): void
+        # _save_keys(): void
+        # _backup_keys(): void
+        # _restore_from_backup(): bool
+        + get_current_key(): bytes
+        + get_previous_keys(): list[KeyData]
+        + rotate_key(): bool
+        + should_rotate_key(): bool
+    }
+    note bottom of BaseKeyManager
+        Абстрактный базовый класс для менеджеров ключей (AES, Fernet).
+        Обрабатывает общую логику:
+        - Пути к файлам (`keys_file`, `backup_file`)
+        - Загрузка/создание файлов ключей (`_load_or_create_keys`)
+        - Сохранение ключей (`_save_keys`)
+        - Резервное копирование файлов ключей (`_backup_keys`)
+        - Восстановление из резервных копий (`_restore_from_backup`)
+        - Взаимодействует с KeyRecoveryManager.
+    end note
+
+    class AESKeyManager extends BaseKeyManager {
+        # _create_new_keys(): void
+    }
+    note right of AESKeyManager
+        Управляет ключами шифрования AES.
+        Генерирует 256-битные ключи AES.
+        Хранит ключи в `aes_keys.json`.
+    end note
+
+    class FernetKeyManager extends BaseKeyManager {
+        # _create_new_keys(): void
+    }
+    note left of FernetKeyManager
+        Управляет ключами шифрования Fernet.
+        Генерирует ключи Fernet.
+        Хранит ключи в `fernet_keys.json`.
+    end note
+
+    class KeysData {
+        + current: KeyData
+        + previous: Optional[KeyData]
+        + should_rotate(): bool
+        + rotate(new_key: KeyData): void
+        + to_dict(): Dict
+        + {static} from_dict(data: Dict): KeysData
+    }
+    note right of KeysData
+        Хранит текущий активный ключ
+        и один предыдущий ключ для поддержки
+        дешифрования данных после ротации ключей.
+        Управляет проверкой истечения срока действия ключа.
+    end note
+
+    class KeyData {
+        + key: str <<property>>
+        + created_at: str <<property>>
+        + expires_at: str <<property>>
+        + is_expired(): bool
+        + to_dict(): Dict
+        + {static} from_dict(data: Dict): KeyData
+    }
+    note left of KeyData
+        Представляет один ключ шифрования
+        с его метаданными:
+        - Ключ (строка в кодировке base64)
+        - Временная метка создания
+        - Временная метка истечения срока действия
+    end note
+}
+
+package "Операции Шифрования Данных" {
+    class CryptoManager {
+        - key_factory: KeyFactory
+        + encrypt_password(password: str, user_id: int): str
+        + decrypt_password(encrypted_password: str, user_id: int): str
+        # _ensure_aes_key_exists(user_id: int): void
+        # _try_decrypt_with_previous_keys(encrypted_password: str, user_id: int): str
+    }
+    note right of CryptoManager
+        Выполняет фактическое шифрование
+        и дешифрование данных с использованием ключей AES.
+        - Использует AES в режиме SIV для аутентифицированного шифрования.
+        - Обрабатывает дешифрование с текущим и предыдущими ключами.
+        - Перешифровывает данные текущим ключом, если они были
+          дешифрованы предыдущим ключом.
+    end note
+}
+
+package "Утилиты Безопасности" {
+    class KeyRecoveryManager {
+        - user_id: int
+        - keys_dir: Path
+        - backup_dir: Path
+        + restore_from_backup(key_file: Path): bool
+        + handle_key_error(error: KeyManagementError, key_file: Path): Tuple[bool, Optional[str]]
+    }
+    note left of KeyRecoveryManager
+        Управляет восстановлением файлов ключей
+        (например, `aes_keys.json`, `fernet_keys.json`)
+        из их резервных копий, расположенных в
+        поддиректории `backup` папки ключей пользователя.
+    end note
+}
+
+' Взаимосвязи
+Config ..> AppLogic : Предоставляет DB_KEY
+
+KeyInitializer --> KeyFactory : использует >
+' KeyInitializer also directly instantiates AESKeyManager and FernetKeyManager
+' for _initialize_keys_for_user, but the general dependency on KeyFactory is for cache clearing etc.
+KeyInitializer ..> AESKeyManager
+KeyInitializer ..> FernetKeyManager : создает/инициализирует >
+
+KeyFactory --> AESKeyManager : создает / предоставляет >
+KeyFactory --> FernetKeyManager : создает / предоставляет >
+
+CryptoManager --> KeyFactory : использует >
+
+BaseKeyManager --> KeysData : использует >
+BaseKeyManager --> KeyRecoveryManager : использует >
+KeysData o-- "1" KeyData : current
+KeysData o-- "0..1" KeyData : previous
+
+AppLogic ..> KeyInitializer : вызывает для нового пользователя
+AppLogic ..> CryptoManager : использует для шифрования/дешифрования данных
+
+legend left
+  Эта диаграмма иллюстрирует систему управления ключами
+  для шифрования базы данных (ключ-фраза) и данных
+  (AES, Fernet) в Менеджере Паролей.
+
+  <b>Примечание:</b>
+  "AppLogic" представляет собой концептуальное обозначение
+  высокоуровневой логики приложения или точек взаимодействия с UI.
+end legend
+
+@enduml
